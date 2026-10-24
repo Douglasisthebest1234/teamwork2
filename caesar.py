@@ -53,7 +53,7 @@ def main():
             print("Goodbye!")
             break
         else:
-            print("Invalid option, pick 1, 2 or 3.")
+            print("Invalid option, pick 1, 2, 3 or 4.")
 
 
 if __name__ == "__main__":
