@@ -1,0 +1,627 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Explosive Science Lab</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0d1117; color: #e6edf3;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif; user-select: none; }
+  #stage { position: fixed; inset: 0; }
+  canvas { display: block; width: 100%; height: 100%; }
+  #flash { position: fixed; inset: 0; background: #fff; opacity: 0; pointer-events: none; }
+  #hud { position: fixed; top: 12px; left: 12px; right: 12px; display: flex; gap: 12px;
+    justify-content: space-between; align-items: flex-start; pointer-events: none; }
+  .panel { background: rgba(13,17,23,.82); border: 1px solid #30363d; border-radius: 10px;
+    padding: 10px 12px; pointer-events: auto; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .sub { font-size: 12px; color: #8b949e; max-width: 320px; }
+  #stats { font-size: 13px; line-height: 1.5; text-align: right; }
+  #stats b { color: #ffa657; }
+  #log { position: fixed; left: 12px; bottom: 150px; width: min(360px, calc(100% - 24px));
+    font-size: 13px; pointer-events: none; display: flex; flex-direction: column; gap: 4px; }
+  #log div { background: rgba(13,17,23,.85); border-left: 3px solid #ffa657; padding: 4px 8px;
+    border-radius: 4px; animation: fade 4s forwards; }
+  @keyframes fade { 0%,70% { opacity: 1 } 100% { opacity: 0 } }
+  #shelf { position: fixed; left: 0; right: 0; bottom: 0; padding: 10px 12px 14px;
+    background: linear-gradient(#21262d, #161b22); border-top: 3px solid #484f58;
+    display: flex; gap: 8px; align-items: flex-end; overflow-x: auto; }
+  .chem { flex: 0 0 auto; width: 72px; cursor: pointer; text-align: center; font-size: 11px;
+    color: #c9d1d9; background: none; border: 0; padding: 0; font: inherit; }
+  .chem .bottle { width: 40px; height: 56px; margin: 0 auto 4px; border: 2px solid #8b949e;
+    border-radius: 6px 6px 10px 10px; position: relative; overflow: hidden; background: rgba(255,255,255,.05);
+    transition: transform .1s; }
+  .chem .bottle::before { content: ""; position: absolute; top: -2px; left: 12px; width: 12px; height: 8px;
+    background: #6e7681; }
+  .chem .liquid { position: absolute; left: 0; right: 0; bottom: 0; height: 65%; }
+  .chem:hover .bottle { transform: translateY(-4px) rotate(-6deg); }
+  .chem .sym { font-weight: 700; font-size: 12px; }
+  .actions { display: flex; flex-direction: column; gap: 6px; margin-left: auto; padding-left: 8px; }
+  .btn { background: #da3633; color: #fff; border: 0; border-radius: 8px; padding: 8px 12px;
+    font-weight: 700; cursor: pointer; font-size: 13px; white-space: nowrap; }
+  .btn.alt { background: #30363d; }
+  .btn.warn { background: #d29922; color: #111; }
+  .btn:active { transform: scale(.96); }
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="c"></canvas></div>
+<div id="flash"></div>
+
+<div id="hud">
+  <div class="panel">
+    <h1>💥 Explosive Science Lab</h1>
+    <div class="sub">Add chemicals to the flask, then hit <b>IGNITE</b>. Click anywhere in the lab to drop a TNT charge. Safety goggles strongly recommended.</div>
+  </div>
+  <div class="panel" id="stats">
+    Explosions: <b id="count">0</b><br>
+    Biggest blast: <b id="biggest">—</b><br>
+    Lab damage: <b id="damage">0%</b>
+  </div>
+</div>
+
+<div id="log"></div>
+
+<div id="shelf">
+  <div class="actions">
+    <button class="btn" id="ignite">🔥 IGNITE</button>
+    <button class="btn warn" id="chain">⛓ Chain reaction</button>
+  </div>
+  <div class="actions">
+    <button class="btn alt" id="empty">🧽 Empty flask</button>
+    <button class="btn alt" id="clean">🧹 Repair lab</button>
+  </div>
+</div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  const flashEl = document.getElementById('flash');
+  let W, H, DPR;
+
+  // ---------- chemicals ----------
+  // power: explosive energy, react: special interactions
+  const CHEMS = [
+    { id: 'H2O', name: 'Water',        color: '#4fa3ff', power: 0 },
+    { id: 'Na',  name: 'Sodium',       color: '#d0d7de', power: 2 },
+    { id: 'K',   name: 'Potassium',    color: '#bc8cff', power: 3 },
+    { id: 'H2',  name: 'Hydrogen',     color: '#f0f6fc', power: 3 },
+    { id: 'O2',  name: 'Oxygen',       color: '#a5d6ff', power: 1 },
+    { id: 'NG',  name: 'Nitroglycerin',color: '#f2cc60', power: 7 },
+    { id: 'Mg',  name: 'Magnesium',    color: '#ffffff', power: 2 },
+    { id: 'Th',  name: 'Thermite',     color: '#ff7b39', power: 5 },
+    { id: 'Cs',  name: 'Caesium',      color: '#ffd8a8', power: 4 },
+    { id: 'Ur',  name: 'Unobtainium',  color: '#3fb950', power: 12 },
+  ];
+  const byId = Object.fromEntries(CHEMS.map(c => [c.id, c]));
+
+  // ---------- flask state ----------
+  let flask = []; // array of chem ids
+  const MAX_FILL = 6;
+  let flaskBroken = 0; // timer: flask regrows after explosion
+
+  // ---------- world ----------
+  const particles = [];
+  const rings = [];
+  const scorches = [];
+  const debris = [];
+  let shake = 0;
+  let explosions = 0, biggest = 0, damage = 0;
+  const bubbles = [];
+
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth; H = window.innerHeight;
+    canvas.width = W * DPR; canvas.height = H * DPR;
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  const benchY = () => H - 170;
+  const flaskPos = () => ({ x: W / 2, y: benchY() });
+
+  // ---------- audio ----------
+  let actx = null;
+  function audio() {
+    if (!actx) { try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {} }
+    return actx;
+  }
+  function boomSound(size) {
+    const a = audio(); if (!a) return;
+    const dur = 0.4 + size * 0.25;
+    const buf = a.createBuffer(1, a.sampleRate * dur, a.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / d.length, 2.5);
+    const src = a.createBufferSource(); src.buffer = buf;
+    const lp = a.createBiquadFilter(); lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(2500, a.currentTime);
+    lp.frequency.exponentialRampToValueAtTime(60 + 200 / size, a.currentTime + dur);
+    const g = a.createGain(); g.gain.value = Math.min(1, 0.25 + size * 0.12);
+    src.connect(lp).connect(g).connect(a.destination);
+    src.start();
+    // sub thump
+    const o = a.createOscillator(); const og = a.createGain();
+    o.frequency.setValueAtTime(120, a.currentTime);
+    o.frequency.exponentialRampToValueAtTime(30, a.currentTime + 0.5);
+    og.gain.setValueAtTime(Math.min(0.9, 0.2 + size * 0.1), a.currentTime);
+    og.gain.exponentialRampToValueAtTime(0.001, a.currentTime + 0.6);
+    o.connect(og).connect(a.destination); o.start(); o.stop(a.currentTime + 0.6);
+  }
+  function blip(freq) {
+    const a = audio(); if (!a) return;
+    const o = a.createOscillator(), g = a.createGain();
+    o.type = 'sine'; o.frequency.value = freq;
+    g.gain.setValueAtTime(0.08, a.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, a.currentTime + 0.15);
+    o.connect(g).connect(a.destination); o.start(); o.stop(a.currentTime + 0.15);
+  }
+
+  // ---------- log ----------
+  const logEl = document.getElementById('log');
+  function log(msg) {
+    const d = document.createElement('div'); d.textContent = msg;
+    logEl.appendChild(d);
+    setTimeout(() => d.remove(), 4000);
+    while (logEl.children.length > 5) logEl.firstChild.remove();
+  }
+
+  // ---------- explosions ----------
+  const rand = (a, b) => a + Math.random() * (b - a);
+
+  function explode(x, y, size, opts = {}) {
+    // size ~ 1 (pop) .. 15 (apocalyptic)
+    const palette = opts.palette || ['#fff3b0', '#ffd166', '#ff9f1c', '#ff5400', '#d00000'];
+    const n = Math.min(900, Math.floor(60 + size * 45));
+    for (let i = 0; i < n; i++) {
+      const ang = Math.random() * Math.PI * 2;
+      const sp = Math.pow(Math.random(), 0.6) * (3 + size * 1.6);
+      particles.push({
+        x, y, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp - size * 0.15,
+        life: rand(30, 60 + size * 6), age: 0,
+        r: rand(2, 4 + size * 0.8), color: palette[(Math.random() * palette.length) | 0],
+        type: 'fire', drag: 0.94,
+      });
+    }
+    // smoke
+    for (let i = 0; i < 20 + size * 10; i++) {
+      const ang = Math.random() * Math.PI * 2;
+      const sp = Math.random() * (1 + size * 0.5);
+      particles.push({
+        x: x + rand(-10, 10), y: y + rand(-10, 10),
+        vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp - rand(0.5, 1.5),
+        life: rand(80, 160 + size * 10), age: 0, r: rand(8, 16 + size * 3),
+        color: opts.smoke || '80,80,90', type: 'smoke', drag: 0.97,
+      });
+    }
+    // sparks
+    for (let i = 0; i < 30 + size * 12; i++) {
+      const ang = Math.random() * Math.PI * 2;
+      const sp = rand(6, 10 + size * 2);
+      particles.push({
+        x, y, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp - 3,
+        life: rand(40, 90), age: 0, r: 1.5, color: '#fff7d6', type: 'spark', drag: 0.985, grav: 0.18,
+      });
+    }
+    // debris chunks
+    for (let i = 0; i < 4 + size * 2; i++) {
+      const ang = rand(-Math.PI, 0);
+      const sp = rand(4, 8 + size * 1.5);
+      debris.push({
+        x, y, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp,
+        rot: Math.random() * 6, vr: rand(-0.3, 0.3), s: rand(3, 8),
+        color: ['#6e7681', '#8b949e', '#a5d6ff', '#484f58'][(Math.random() * 4) | 0], life: 400,
+      });
+    }
+    rings.push({ x, y, r: 5, max: 60 + size * 45, age: 0, life: 30 + size * 2 });
+    if (size > 6) rings.push({ x, y, r: 5, max: 120 + size * 70, age: 0, life: 45 + size * 3, thin: true });
+    scorches.push({ x, y, r: 20 + size * 12, a: Math.min(0.6, 0.15 + size * 0.04) });
+    if (scorches.length > 60) scorches.shift();
+
+    shake = Math.min(40, shake + size * 2.5);
+    flash(Math.min(0.9, size * 0.07));
+    boomSound(size);
+
+    explosions++; biggest = Math.max(biggest, size);
+    damage = Math.min(100, damage + size * 0.8);
+    updateStats();
+
+    if (opts.mushroom) mushroom(x, y, size);
+  }
+
+  function mushroom(x, y, size) {
+    // rising column + cap of fire/smoke
+    let t = 0;
+    const iv = setInterval(() => {
+      t++;
+      for (let i = 0; i < 12; i++) {
+        particles.push({
+          x: x + rand(-15, 15), y: y - t * 4 + rand(-5, 5),
+          vx: rand(-0.6, 0.6), vy: rand(-2.5, -1),
+          life: rand(60, 120), age: 0, r: rand(10, 20),
+          color: Math.random() < 0.5 ? '#ff7b00' : '#ffd166', type: 'fire', drag: 0.97,
+        });
+      }
+      if (t > 25) {
+        for (let i = 0; i < 30; i++) {
+          const ang = rand(-Math.PI, 0);
+          particles.push({
+            x: x + Math.cos(ang) * rand(0, 40), y: y - 100 - size * 6 + Math.sin(ang) * rand(0, 20),
+            vx: Math.cos(ang) * rand(1, 4), vy: Math.sin(ang) * rand(0.2, 1.5),
+            life: rand(120, 220), age: 0, r: rand(18, 34),
+            color: Math.random() < 0.4 ? '255,140,40' : '90,80,80', type: 'smoke', drag: 0.985,
+          });
+        }
+      }
+      if (t > 45) clearInterval(iv);
+    }, 30);
+  }
+
+  function flash(amount) {
+    flashEl.style.transition = 'none';
+    flashEl.style.opacity = amount;
+    requestAnimationFrame(() => {
+      flashEl.style.transition = 'opacity 0.6s ease-out';
+      flashEl.style.opacity = 0;
+    });
+  }
+
+  // ---------- reactions ----------
+  function count(id) { return flask.filter(c => c === id).length; }
+
+  function react() {
+    const { x, y } = flaskPos();
+    if (flaskBroken > 0) { log('The flask is still in pieces...'); return; }
+    if (!flask.length) { log('The flask is empty. You ignite... air. Nothing happens.'); return; }
+
+    let size = flask.reduce((s, id) => s + byId[id].power, 0);
+    let opts = {};
+    let msg = '';
+    const alkali = count('Na') + count('K') + count('Cs');
+    const water = count('H2O');
+
+    if (count('Ur') >= 2) {
+      size = 15; opts.mushroom = true;
+      opts.palette = ['#ffffff', '#d2ffd2', '#7ee787', '#3fb950', '#ffd166'];
+      opts.smoke = '60,90,60';
+      msg = '☢️ DOUBLE UNOBTAINIUM. Please evacuate the building (and the city).';
+    } else if (count('Ur') === 1) {
+      size = Math.max(size, 11); opts.mushroom = true;
+      opts.palette = ['#ffffff', '#aff5b4', '#3fb950', '#ffa657'];
+      msg = '☢️ Unobtainium went critical. The grant committee will hear about this.';
+    } else if (alkali && water) {
+      size += alkali * water * 2;
+      opts.palette = count('K') ? ['#e2c5ff', '#bc8cff', '#ffffff', '#ff9bce'] :
+                     count('Cs') ? ['#fff', '#ffd8a8', '#79c0ff', '#ff7b72'] :
+                                   ['#fff3b0', '#ffd33d', '#ffab70', '#ffffff'];
+      msg = `Alkali metal + water: violent exothermic reaction! (${alkali} metal × ${water} water)`;
+    } else if (count('H2') && count('O2')) {
+      size += count('H2') * count('O2') * 2;
+      opts.palette = ['#ffffff', '#cae8ff', '#79c0ff', '#ffd166'];
+      msg = '2H₂ + O₂ → 2H₂O + BANG. The Hindenburg sends its regards.';
+    } else if (count('Th') && count('Mg')) {
+      size += 6;
+      opts.palette = ['#ffffff', '#ffffff', '#fff3b0', '#ff7b39'];
+      msg = 'Magnesium-ignited thermite: 2500 °C of molten iron. The bench is gone.';
+    } else if (count('NG')) {
+      size += count('NG') * 2;
+      msg = count('NG') > 2 ? 'That was a LOT of nitroglycerin.' : 'Nitroglycerin: famously not shake-friendly.';
+    } else if (size === 0) {
+      fizz(x, y);
+      log('Just water. It steams a little. Anticlimactic.');
+      return;
+    } else {
+      msg = 'Unstable mixture detonated.';
+    }
+
+    size = Math.max(1, Math.min(15, size));
+    explode(x, y - 30, size, opts);
+    log(msg + ` [yield ${size.toFixed(0)}]`);
+    flask = [];
+    flaskBroken = 90;
+    renderFlaskBadge();
+  }
+
+  function fizz(x, y) {
+    for (let i = 0; i < 40; i++) {
+      particles.push({
+        x: x + rand(-15, 15), y: y - 40, vx: rand(-0.5, 0.5), vy: rand(-2, -0.5),
+        life: rand(40, 90), age: 0, r: rand(6, 12), color: '200,210,220', type: 'smoke', drag: 0.98,
+      });
+    }
+  }
+
+  function chain() {
+    const n = 12;
+    log('⛓ Chain reaction initiated. Run.');
+    for (let i = 0; i < n; i++) {
+      setTimeout(() => {
+        const x = (i + 0.5) * (W / n) + rand(-20, 20);
+        const y = rand(H * 0.25, benchY() - 20);
+        explode(x, y, rand(3, 7) + i * 0.4, {
+          palette: i % 3 === 0 ? ['#fff', '#79c0ff', '#a5d6ff', '#bc8cff'] :
+                   i % 3 === 1 ? ['#fff', '#7ee787', '#3fb950', '#ffd166'] : undefined,
+        });
+      }, i * 140);
+    }
+    setTimeout(() => explode(W / 2, benchY() - 60, 14, { mushroom: true }), n * 140 + 200);
+  }
+
+  // ---------- input ----------
+  canvas.addEventListener('pointerdown', e => {
+    audio();
+    const r = canvas.getBoundingClientRect();
+    const x = e.clientX - r.left, y = e.clientY - r.top;
+    // tnt: fuse then boom
+    const tnt = { x, y, fuse: 40 };
+    tnts.push(tnt);
+    blip(880);
+  });
+  const tnts = [];
+
+  // ---------- shelf UI ----------
+  const shelf = document.getElementById('shelf');
+  const firstActions = shelf.querySelector('.actions');
+  CHEMS.forEach(c => {
+    const b = document.createElement('button');
+    b.className = 'chem';
+    b.title = `Add ${c.name}`;
+    b.innerHTML = `<div class="bottle"><div class="liquid" style="background:${c.color}"></div></div>
+                   <div class="sym">${c.id}</div><div>${c.name}</div>`;
+    b.onclick = () => addChem(c.id);
+    shelf.insertBefore(b, firstActions);
+  });
+
+  function addChem(id) {
+    audio();
+    if (flaskBroken > 0) { log('Wait for a new flask...'); return; }
+    if (flask.length >= MAX_FILL) { log('Flask is full! Ignite it or empty it.'); return; }
+    flask.push(id);
+    blip(300 + flask.length * 80);
+    // pour stream
+    const { x, y } = flaskPos();
+    for (let i = 0; i < 15; i++) {
+      particles.push({ x: x + rand(-4, 4), y: y - 140 - i * 6, vx: 0, vy: 3, life: 25, age: 0,
+        r: 3, color: byId[id].color, type: 'drop', drag: 1 });
+    }
+    // unstable mixes may go off by themselves
+    const alkali = count('Na') + count('K') + count('Cs');
+    if ((alkali && count('H2O') && Math.random() < 0.35) || (count('NG') >= 2 && Math.random() < 0.5)) {
+      log('⚠️ The mixture is reacting on its own!');
+      setTimeout(react, 500);
+    }
+    renderFlaskBadge();
+  }
+  function renderFlaskBadge() {}
+
+  document.getElementById('ignite').onclick = () => { audio(); react(); };
+  document.getElementById('chain').onclick = () => { audio(); chain(); };
+  document.getElementById('empty').onclick = () => { flask = []; log('Flask emptied into the sink. The sink looks worried.'); };
+  document.getElementById('clean').onclick = () => {
+    scorches.length = 0; debris.length = 0; damage = 0; updateStats();
+    log('Lab repaired. Insurance premiums increased.');
+  };
+
+  function updateStats() {
+    document.getElementById('count').textContent = explosions;
+    document.getElementById('biggest').textContent = biggest ? `yield ${biggest.toFixed(0)}` : '—';
+    document.getElementById('damage').textContent = Math.round(damage) + '%';
+  }
+
+  // ---------- drawing ----------
+  function drawLab() {
+    // back wall tiles
+    const g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, '#1b2430'); g.addColorStop(1, '#10161e');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    ctx.strokeStyle = 'rgba(255,255,255,0.035)'; ctx.lineWidth = 1;
+    for (let x = 0; x < W; x += 48) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, benchY()); ctx.stroke(); }
+    for (let y = 0; y < benchY(); y += 48) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+
+    // warning sign
+    const sx = W - 120, sy = 120;
+    if (W > 600) {
+      ctx.save(); ctx.translate(sx, sy);
+      ctx.fillStyle = '#d29922';
+      ctx.beginPath(); ctx.moveTo(0, -40); ctx.lineTo(40, 30); ctx.lineTo(-40, 30); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#111'; ctx.font = 'bold 40px system-ui'; ctx.textAlign = 'center'; ctx.fillText('!', 0, 22);
+      ctx.font = 'bold 11px system-ui'; ctx.fillStyle = '#d29922'; ctx.fillText('HIGH EXPLOSIVES', 0, 50);
+      ctx.restore();
+    }
+
+    // shelves with glassware silhouettes
+    ctx.fillStyle = '#30363d';
+    const shY = H * 0.32;
+    ctx.fillRect(40, shY, Math.min(380, W * 0.35), 8);
+    for (let i = 0; i < 5; i++) {
+      const bx = 60 + i * 70;
+      if (bx > Math.min(380, W * 0.35)) break;
+      ctx.fillStyle = ['rgba(79,163,255,.35)', 'rgba(63,185,80,.35)', 'rgba(255,123,57,.35)', 'rgba(188,140,255,.35)', 'rgba(242,204,96,.35)'][i];
+      ctx.fillRect(bx, shY - 40, 30, 40);
+      ctx.strokeStyle = 'rgba(200,210,220,.4)'; ctx.strokeRect(bx, shY - 40, 30, 40);
+    }
+
+    // scorch marks
+    for (const s of scorches) {
+      const rg = ctx.createRadialGradient(s.x, s.y, 0, s.x, s.y, s.r);
+      rg.addColorStop(0, `rgba(0,0,0,${s.a})`); rg.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = rg; ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2); ctx.fill();
+    }
+
+    // bench
+    const by = benchY();
+    ctx.fillStyle = '#3b2f2a'; ctx.fillRect(0, by, W, 24);
+    ctx.fillStyle = '#2a211d'; ctx.fillRect(0, by + 24, W, H - by);
+    ctx.fillStyle = 'rgba(255,255,255,.06)'; ctx.fillRect(0, by, W, 3);
+
+    // bunsen burner
+    const { x } = flaskPos();
+    ctx.fillStyle = '#6e7681'; ctx.fillRect(x - 6, by - 26, 12, 26);
+    ctx.fillRect(x - 22, by - 4, 44, 4);
+    // tripod
+    ctx.strokeStyle = '#8b949e'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(x - 40, by); ctx.lineTo(x - 30, by - 34); ctx.lineTo(x + 30, by - 34); ctx.lineTo(x + 40, by); ctx.stroke();
+    // flame
+    if (flask.length && !flaskBroken) {
+      const fl = 8 + Math.random() * 6;
+      ctx.fillStyle = 'rgba(88,166,255,.85)';
+      ctx.beginPath(); ctx.ellipse(x, by - 30, 4, fl, 0, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+
+  function drawFlask(t) {
+    if (flaskBroken > 0) return;
+    const { x } = flaskPos();
+    const base = benchY() - 36;
+    ctx.save();
+    // wobble if volatile
+    const volatile = flask.reduce((s, id) => s + byId[id].power, 0);
+    if (volatile > 6) ctx.translate(Math.sin(t * 0.05 * volatile) * Math.min(4, volatile * 0.3), 0);
+
+    // erlenmeyer shape
+    const path = new Path2D();
+    path.moveTo(x - 12, base - 120);
+    path.lineTo(x - 12, base - 75);
+    path.lineTo(x - 55, base);
+    path.lineTo(x + 55, base);
+    path.lineTo(x + 12, base - 75);
+    path.lineTo(x + 12, base - 120);
+
+    // liquid layers
+    if (flask.length) {
+      ctx.save(); ctx.clip(path);
+      const layerH = 75 / MAX_FILL;
+      flask.forEach((id, i) => {
+        ctx.fillStyle = byId[id].color;
+        ctx.globalAlpha = 0.75;
+        ctx.fillRect(x - 60, base - (i + 1) * layerH - 1, 120, layerH + 1);
+      });
+      ctx.globalAlpha = 1;
+      // bubbles
+      if (Math.random() < 0.3 + volatile * 0.05) {
+        bubbles.push({ x: x + rand(-30, 30), y: base - 3, r: rand(1.5, 3.5) });
+      }
+      ctx.fillStyle = 'rgba(255,255,255,.6)';
+      const top = base - flask.length * layerH;
+      for (let i = bubbles.length - 1; i >= 0; i--) {
+        const b = bubbles[i]; b.y -= 0.8 + volatile * 0.1; b.x += rand(-0.4, 0.4);
+        if (b.y < top) { bubbles.splice(i, 1); continue; }
+        ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.restore();
+    }
+    ctx.strokeStyle = 'rgba(200,225,255,.85)'; ctx.lineWidth = 2.5;
+    ctx.stroke(path);
+    ctx.fillStyle = 'rgba(200,225,255,.08)'; ctx.fill(path);
+    // rim
+    ctx.beginPath(); ctx.moveTo(x - 16, base - 120); ctx.lineTo(x + 16, base - 120); ctx.stroke();
+    // label
+    ctx.fillStyle = '#8b949e'; ctx.font = '12px system-ui'; ctx.textAlign = 'center';
+    ctx.fillText(flask.length ? flask.join(' + ') : 'empty flask', x, base - 132);
+    ctx.restore();
+  }
+
+  function drawTNT(t) {
+    for (let i = tnts.length - 1; i >= 0; i--) {
+      const k = tnts[i];
+      k.fuse--;
+      ctx.fillStyle = '#da3633'; ctx.fillRect(k.x - 10, k.y - 16, 20, 32);
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 8px system-ui'; ctx.textAlign = 'center'; ctx.fillText('TNT', k.x, k.y + 3);
+      // fuse spark
+      ctx.strokeStyle = '#8b949e'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(k.x, k.y - 16); ctx.lineTo(k.x + 4, k.y - 16 - k.fuse * 0.3); ctx.stroke();
+      if (t % 2 === 0) particles.push({ x: k.x + 4, y: k.y - 16 - k.fuse * 0.3, vx: rand(-1.5, 1.5), vy: rand(-2, 0),
+        life: 12, age: 0, r: 1.5, color: '#ffd166', type: 'spark', drag: 0.95, grav: 0.1 });
+      if (k.fuse <= 0) { tnts.splice(i, 1); explode(k.x, k.y, rand(3, 6)); }
+    }
+  }
+
+  function step() {
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.age++;
+      if (p.age > p.life) { particles.splice(i, 1); continue; }
+      p.vx *= p.drag; p.vy *= p.drag;
+      if (p.type === 'fire') p.vy -= 0.04;
+      if (p.type === 'smoke') p.vy -= 0.02;
+      if (p.grav) p.vy += p.grav;
+      if (p.type === 'drop') p.vy += 0.2;
+      p.x += p.vx; p.y += p.vy;
+      if (p.type === 'spark' && p.y > benchY()) { p.y = benchY(); p.vy *= -0.4; p.vx *= 0.7; }
+    }
+    for (let i = debris.length - 1; i >= 0; i--) {
+      const d = debris[i];
+      d.vy += 0.3; d.x += d.vx; d.y += d.vy; d.rot += d.vr; d.life--;
+      if (d.y > benchY()) { d.y = benchY(); d.vy *= -0.35; d.vx *= 0.75; d.vr *= 0.7; }
+      if (d.x < 0 || d.x > W) d.vx *= -0.6;
+      if (d.life <= 0) debris.splice(i, 1);
+    }
+    for (let i = rings.length - 1; i >= 0; i--) {
+      const r = rings[i]; r.age++;
+      r.r += (r.max - r.r) * 0.15;
+      if (r.age > r.life) rings.splice(i, 1);
+    }
+    if (flaskBroken > 0) flaskBroken--;
+  }
+
+  function drawParticles() {
+    // smoke first (normal blend)
+    for (const p of particles) {
+      if (p.type !== 'smoke') continue;
+      const k = p.age / p.life;
+      ctx.fillStyle = `rgba(${p.color},${0.35 * (1 - k)})`;
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.r * (1 + k * 1.5), 0, Math.PI * 2); ctx.fill();
+    }
+    for (const d of debris) {
+      ctx.save(); ctx.translate(d.x, d.y); ctx.rotate(d.rot);
+      ctx.fillStyle = d.color; ctx.globalAlpha = Math.min(1, d.life / 60);
+      ctx.fillRect(-d.s / 2, -d.s / 2, d.s, d.s * 0.6);
+      ctx.restore();
+    }
+    ctx.globalCompositeOperation = 'lighter';
+    for (const p of particles) {
+      if (p.type === 'smoke') continue;
+      const k = p.age / p.life;
+      ctx.globalAlpha = 1 - k;
+      ctx.fillStyle = p.color;
+      if (p.type === 'spark') {
+        ctx.strokeStyle = p.color; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(p.x - p.vx * 2, p.y - p.vy * 2); ctx.stroke();
+      } else {
+        ctx.beginPath(); ctx.arc(p.x, p.y, Math.max(0.5, p.r * (1 - k * 0.6)), 0, Math.PI * 2); ctx.fill();
+      }
+    }
+    for (const r of rings) {
+      const k = r.age / r.life;
+      ctx.globalAlpha = (1 - k) * (r.thin ? 0.5 : 0.8);
+      ctx.strokeStyle = '#fff2cc'; ctx.lineWidth = r.thin ? 2 : 6 * (1 - k) + 1;
+      ctx.beginPath(); ctx.arc(r.x, r.y, r.r, 0, Math.PI * 2); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  let t = 0;
+  function frame() {
+    t++;
+    step();
+    ctx.save();
+    if (shake > 0.3) {
+      ctx.translate(rand(-shake, shake), rand(-shake, shake));
+      shake *= 0.88;
+    }
+    drawLab();
+    drawFlask(t);
+    drawTNT(t);
+    drawParticles();
+    ctx.restore();
+    requestAnimationFrame(frame);
+  }
+  frame();
+  log('Welcome to the lab. Try Sodium + Water, or Hydrogen + Oxygen.');
+})();
+</script>
+</body>
+</html>
