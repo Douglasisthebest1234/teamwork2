@@ -3,6 +3,7 @@ from sha256 import sha_256
 
 
 message = "Hello, World!"
+message = input()
 shift = 3
 
 secret = encrypt(message, shift)

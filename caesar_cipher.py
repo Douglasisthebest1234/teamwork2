@@ -1,6 +1,3 @@
-import hashlib
-def sha_256(n):
-    return hashlib.sha256(n.encode()).hexdigest()
 def caesar(text, shift):
     result = []
     for ch in text:
@@ -36,8 +33,7 @@ def main():
     while True:
         print("\n1) Encrypt")
         print("2) Decrypt")
-        print("3) Encrypt in SHA256")
-        print("4) Quit")
+        print("3) Quit")
         choice = input("Choose an option: ").strip()
 
         if choice == "1":
@@ -46,14 +42,11 @@ def main():
         elif choice == "2":
             message = input("Message to decrypt: ")
             print("Decrypted:", decrypt(message, ask_shift()))
-        elif choice=="3":
-            message = input("Message to encrypt: ")
-            print("Encrypted:", sha_256(message))
-        elif choice == "4":
+        elif choice == "3":
             print("Goodbye!")
             break
         else:
-            print("Invalid option, pick 1, 2, 3 or 4.")
+            print("Invalid option, pick 1, 2 or 3.")
 
 
 if __name__ == "__main__":
